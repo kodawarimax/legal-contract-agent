@@ -51,6 +51,11 @@ PUBLIC_PRIMARY_HOSTS = (
     "e-gov.go.jp", "elaws.e-gov.go.jp", "courts.go.jp", "digital.go.jp",
     "meti.go.jp", "moj.go.jp", "ppc.go.jp", "jftc.go.jp", "nta.go.jp",
 )
+AI_LEGAL_PRIORITY_RE = re.compile(
+    r"(?:生成AI|(?<![A-Za-z])AI(?![A-Za-z])|ＡＩ|人工知能|ChatGPT|Chat-GPT|Claude|Gemini|LLM|プロンプト|"
+    r"ハルシネーション|ディープフェイク|自動運転|スマートコントラクト|"
+    r"不正アクセス|サイバー|セキュリティ|セキュリティー|情報漏洩|個人情報保護|著作権|フリーランス|下請法|独占禁止法|法改正|電子契約|電子帳簿)"
+)
 
 
 @dataclass(frozen=True)
@@ -315,6 +320,82 @@ def hydrate_inbox(paths: Paths, fetcher: Callable[[str], str]) -> None:
         write_json(path, card)
 
 
+def detect_ai_legal_tags(title: str, body: str) -> list[str]:
+    """Extract AI & emerging legal case keywords without ASCII substring false positives."""
+    return sorted(set(AI_LEGAL_PRIORITY_RE.findall(f"{title}\n{body}")))
+
+
+def update_daily_ai_legal_feed(
+    paths: Paths,
+    now: datetime,
+    *,
+    write_active_knowledge: bool = False,
+    max_items: int = 12,
+) -> Path:
+    """Generate a daily AI & emerging legal cases digest from inbox candidates."""
+    today_str = now.astimezone(JST).date().isoformat()
+    ai_cards: list[dict] = []
+    for path in sorted(paths.inbox.glob("*.json")):
+        card = read_json(path, {})
+        title = str(card.get("title") or "")
+        body = str(card.get("source_text") or card.get("excerpt") or "")
+        tags = detect_ai_legal_tags(title, body)
+        if not tags:
+            continue
+        card_copy = dict(card)
+        card_copy["ai_legal_tags"] = tags
+        ai_cards.append(card_copy)
+
+    ai_cards.sort(
+        key=lambda c: (str(c.get("published_at") or ""), str(c.get("entry_id") or "")),
+        reverse=True,
+    )
+    selected = ai_cards[:max_items]
+    lines = [
+        f"# 日次自動更新フィード：AI・新規契約・法務トピック（最終同期: {today_str}）",
+        "",
+        "※`【※一次資料・要弁護士確認】`が付された記事を含む全ての法務論点は一次整理の参考情報であり、個別案件への法令適用・有効性判断・最終結論は人間および弁護士の確認を必須とする。",
+        "",
+        f"- 検出AI・新法務記事数: {len(ai_cards)}件（最新{len(selected)}件を表示）",
+        "",
+    ]
+    for card in selected:
+        eid = card.get("entry_id", "")
+        title = card.get("title", "").strip()
+        pub = str(card.get("published_at") or "")[:10]
+        url = card.get("source_url", "")
+        tags_str = ", ".join(card.get("ai_legal_tags", []))
+        verif_flag = "【※一次資料・要弁護士確認】" if card.get("requires_primary_source_verification") else "【実務原則】"
+        cleaned_body, _ = sanitize(str(card.get("source_text") or card.get("excerpt") or ""))
+        snippet = cleaned_body[:520] + ("…" if len(cleaned_body) > 520 else "")
+        lines.extend([
+            f"## {verif_flag} {title} ({pub} / `{eid}`)",
+            f"- 出典: {url}",
+            f"- 検出キーワード: `{tags_str}`",
+            f"- 要旨抜粋: {snippet}",
+            "",
+        ])
+
+    digest_text = "\n".join(lines).strip() + "\n"
+    paths.review.mkdir(parents=True, exist_ok=True)
+    digest_path = paths.review / "daily-ai-legal-latest.md"
+    digest_path.write_text(digest_text, encoding="utf-8")
+
+    if write_active_knowledge and not looks_like_secret(digest_text):
+        target = paths.knowledge / "10_daily_ai_legal_feed.md"
+        other_chars = sum(
+            len(p.read_text(encoding="utf-8"))
+            for p in paths.knowledge.rglob("*.md")
+            if p.name != "README.md" and p.resolve() != target.resolve()
+        )
+        if other_chars + len(digest_text) <= MAX_APPROVED_KNOWLEDGE_CHARS:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".md.tmp")
+            tmp.write_text(digest_text, encoding="utf-8")
+            tmp.replace(target)
+    return digest_path
+
+
 def seed_state(paths: Paths) -> dict:
     legacy = read_json(paths.knowledge / ".blog_manifest.json", {"synced_entry_ids": {}})
     return {
@@ -386,6 +467,7 @@ def run(
     pages: int = 2,
     now: datetime | None = None,
     blog_url: str | None = None,
+    update_ai_feed: bool = True,
 ) -> dict:
     now = now or datetime.now(timezone.utc)
     try:
@@ -433,11 +515,17 @@ def run(
         write_json(paths.state, state)
         normalize_pending(paths)
         review = write_weekly_review(paths, cards, now)
+        ai_digest = update_daily_ai_legal_feed(
+            paths,
+            now,
+            write_active_knowledge=update_ai_feed,
+        )
         result = {
             "status": "ok",
             "new_candidates": len(cards),
             "success_streak_days": state["success_streak_days"],
             "weekly_review": str(review),
+            "daily_ai_legal_digest": str(ai_digest),
             "action_needed": "review pending candidates; promotion remains human-gated",
             "checked_at": now.isoformat(),
         }
