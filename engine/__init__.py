@@ -8,6 +8,16 @@ from .checklist import (
     build_negotiation_sim_block,
     find_comment_violations,
 )
+from .contract_comments import (
+    COMMENT_GENERATION_PROMPT,
+    build_stage1_revision_prompt,
+    build_stage2_self_review_prompt,
+    build_stage3_consistency_prompt,
+    fallback_comment,
+    generate_strategic_comments,
+    parse_comments_json,
+    validate_request_options,
+)
 from .injection_guard import (
     check_injection,
     guard_user_text,
@@ -22,6 +32,14 @@ __all__ = [
     "V3_CONTRACT_GATE",
     "build_negotiation_sim_block",
     "find_comment_violations",
+    "COMMENT_GENERATION_PROMPT",
+    "build_stage1_revision_prompt",
+    "build_stage2_self_review_prompt",
+    "build_stage3_consistency_prompt",
+    "fallback_comment",
+    "generate_strategic_comments",
+    "parse_comments_json",
+    "validate_request_options",
     "check_injection",
     "guard_user_text",
     "wrap_context",
